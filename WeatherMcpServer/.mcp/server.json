@@ -8,7 +8,9 @@
       "name": "<your package ID here>",
       "version": "0.1.0-beta",
       "package_arguments": [],
-      "environment_variables": []
+      "environment_variables": [
+        "WEATHER_API_KEY"
+      ]
     }
   ],
   "repository": {

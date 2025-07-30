@@ -45,9 +45,13 @@ Your task is to create a functional MCP server that provides real weather data t
 
 2. The basic project structure is already provided in the `WeatherMcpServer` directory
 
-3. Get a free API key from a weather service provider
+3. Get a free API key from [WeatherAPI.com](https://www.weatherapi.com/) or another provider
 
-4. Configure your API key as an environment variable
+4. Configure your API key as an environment variable named `WEATHER_API_KEY`. For example:
+
+   ```bash
+   export WEATHER_API_KEY=6b8ee00c1cd04d3e909150103253007
+   ```
 
 ### Example Tool Structure
 ```csharp

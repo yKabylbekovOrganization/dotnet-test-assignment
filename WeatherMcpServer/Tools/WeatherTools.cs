@@ -1,6 +1,8 @@
+using System;
 using System.ComponentModel;
 using System.Net.Http;
 using System.Text.Json;
+using System.Linq;
 using Microsoft.Extensions.Logging;
 
 namespace WeatherMcpServer.Tools;
@@ -15,7 +17,8 @@ public class WeatherTools
     {
         _httpClientFactory = httpClientFactory;
         _logger = logger;
-        _apiKey = "6b8ee00c1cd04d3e909150103253007"
+        _apiKey = Environment.GetEnvironmentVariable("WEATHER_API_KEY")
+            ?? throw new InvalidOperationException("WEATHER_API_KEY environment variable is not set");
     }
 
     [McpServerTool]
@@ -63,7 +66,7 @@ public class WeatherTools
             var query = $"{city}{(countryCode != null ? $",{countryCode}" : "")}";
             var client = _httpClientFactory.CreateClient();
 
-            var url = $"https://api.openweathermap.org/data/2.5/forecast?q={query}&appid={_apiKey}&units=metric";
+            var url = $"https://api.weatherapi.com/v1/forecast.json?key={_apiKey}&q={Uri.EscapeDataString(query)}&days=3";
             var response = await client.GetAsync(url);
 
             if (!response.IsSuccessStatusCode)
@@ -73,28 +76,20 @@ public class WeatherTools
 
             var json = await response.Content.ReadAsStringAsync();
             using var doc = JsonDocument.Parse(json);
-            var list = doc.RootElement.GetProperty("list");
+            var forecastDays = doc.RootElement.GetProperty("forecast").GetProperty("forecastday");
 
             var forecast = new List<string>();
-            int counter = 0;
 
-            foreach (var item in list.EnumerateArray())
+            foreach (var day in forecastDays.EnumerateArray())
             {
-                var dateTime = item.GetProperty("dt_txt").GetString();
-                var temp = item.GetProperty("main").GetProperty("temp").GetDouble();
-                var desc = item.GetProperty("weather")[0].GetProperty("description").GetString();
-
-                if (dateTime != null && dateTime.Contains("12:00:00")) // Прогноз в полдень
-                {
-                    forecast.Add($"{dateTime[..10]}: {temp}°C, {desc}");
-                    counter++;
-                }
-
-                if (counter >= 3)
-                    break;
+                var date = day.GetProperty("date").GetString();
+                var temp = day.GetProperty("day").GetProperty("avgtemp_c").GetDouble();
+                var desc = day.GetProperty("day").GetProperty("condition").GetProperty("text").GetString();
+                forecast.Add($"{date}: {temp}°C, {desc}");
             }
 
-            return $"3-day forecast for {city}:\n" + string.Join("\n", forecast);
+            var location = doc.RootElement.GetProperty("location").GetProperty("name").GetString();
+            return $"3-day forecast for {location}:\n" + string.Join("\n", forecast);
         }
         catch (Exception ex)
         {
@@ -114,48 +109,32 @@ public class WeatherTools
             var client = _httpClientFactory.CreateClient();
             var query = $"{city}{(countryCode != null ? $",{countryCode}" : "")}";
 
-            // 1. Geocoding API — Get coordinates
-            var geoUrl = $"http://api.openweathermap.org/geo/1.0/direct?q={query}&limit=1&appid={_apiKey}";
-            var geoResponse = await client.GetAsync(geoUrl);
+            var url = $"https://api.weatherapi.com/v1/alerts.json?key={_apiKey}&q={Uri.EscapeDataString(query)}";
+            var response = await client.GetAsync(url);
 
-            if (!geoResponse.IsSuccessStatusCode)
-                return $"Failed to get coordinates: {geoResponse.StatusCode}";
+            if (!response.IsSuccessStatusCode)
+                return $"Failed to get weather alerts: {response.StatusCode}";
 
-            var geoJson = await geoResponse.Content.ReadAsStringAsync();
-            var geoDoc = JsonDocument.Parse(geoJson);
-            var geoRoot = geoDoc.RootElement;
+            var json = await response.Content.ReadAsStringAsync();
+            var doc = JsonDocument.Parse(json);
+            var root = doc.RootElement;
 
-            if (geoRoot.GetArrayLength() == 0)
-                return $"No coordinates found for city '{city}'";
-
-            var location = geoRoot[0];
-            var lat = location.GetProperty("lat").GetDouble();
-            var lon = location.GetProperty("lon").GetDouble();
-
-            // 2. OneCall API — Get alerts
-            var alertsUrl = $"https://api.openweathermap.org/data/3.0/onecall?lat={lat}&lon={lon}&appid={_apiKey}&units=metric";
-            var alertResponse = await client.GetAsync(alertsUrl);
-
-            if (!alertResponse.IsSuccessStatusCode)
-                return $"Failed to get weather alerts: {alertResponse.StatusCode}";
-
-            var alertJson = await alertResponse.Content.ReadAsStringAsync();
-            var alertDoc = JsonDocument.Parse(alertJson);
-            var root = alertDoc.RootElement;
-
-            if (!root.TryGetProperty("alerts", out var alertsArray))
+            if (!root.TryGetProperty("alerts", out var alertsObj) ||
+                !alertsObj.TryGetProperty("alert", out var alertsArray) ||
+                alertsArray.GetArrayLength() == 0)
+            {
                 return $"No weather alerts for {city}.";
+            }
 
-            var alerts = alertsArray.EnumerateArray()
-                .Select(alert =>
-                {
-                    var eventName = alert.GetProperty("event").GetString();
-                    var sender = alert.GetProperty("sender_name").GetString();
-                    var description = alert.GetProperty("description").GetString();
-                    return $"⚠️ {eventName} by {sender}\n{description}";
-                });
+            var alerts = alertsArray.EnumerateArray().Select(alert =>
+            {
+                var eventName = alert.TryGetProperty("event", out var ev) ? ev.GetString() : alert.GetProperty("headline").GetString();
+                var desc = alert.GetProperty("desc").GetString();
+                return $"⚠️ {eventName}\n{desc}";
+            });
 
-            return $"Weather alerts for {city}:\n\n" + string.Join("\n\n", alerts);
+            var location = query;
+            return $"Weather alerts for {location}:\n\n" + string.Join("\n\n", alerts);
         }
         catch (Exception ex)
         {
